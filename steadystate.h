@@ -49,6 +49,7 @@ enum {
 	__FIO_SS_DATA,
 	__FIO_SS_PCT,
 	__FIO_SS_BUFFER_FULL,
+	__FIO_SS_MIX,
 };
 
 enum {
@@ -63,6 +64,7 @@ enum {
 
 	FIO_SS_IOPS_SLOPE	= FIO_SS_IOPS | FIO_SS_SLOPE,
 	FIO_SS_BW_SLOPE		= FIO_SS_BW | FIO_SS_SLOPE,
+	FIO_SS_IOPS_MIX		= 1 << __FIO_SS_MIX,
 };
 
 #endif

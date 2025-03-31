@@ -134,6 +134,121 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw,
 	return false;
 }
 
+
+static bool steadystate_mix(uint64_t iops, uint64_t bw,
+			      struct thread_data *td)
+{
+	int i, j;
+	double result;
+	double mean;
+	int diff;
+        float mean_criterion;
+        float slope_criterion;
+	bool dev_ss = 0; 
+	bool slope_ss = 0;
+
+
+	struct steadystate_data *ss = &td->ss;
+	uint64_t new_val;
+	int intervals = ss->dur / (ss_check_interval / 1000L);
+
+	ss->bw_data[ss->tail] = bw;
+	ss->iops_data[ss->tail] = iops;
+
+	if (ss->state & FIO_SS_IOPS)
+		new_val = iops;
+	else
+		new_val = bw;
+
+	if (ss->state & FIO_SS_BUFFER_FULL || ss->tail - ss->head == intervals - 1) {
+		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
+			/* first time through */
+			for (i = 0, ss->sum_y = 0; i < intervals; i++) {
+				if (ss->state & FIO_SS_IOPS)
+					ss->sum_y += ss->iops_data[i];
+				else
+					ss->sum_y += ss->bw_data[i];
+				j = (ss->head + i) % intervals;
+				if (ss->state & FIO_SS_IOPS)
+					ss->sum_xy += i * ss->iops_data[j];
+				else
+					ss->sum_xy += i * ss->bw_data[j];
+			}
+			ss->state |= FIO_SS_BUFFER_FULL;
+		} else {		/* easy to update the sums */
+			ss->sum_y -= ss->oldest_y;
+			ss->sum_y += new_val;
+			ss->sum_xy = ss->sum_xy - ss->sum_y + intervals * new_val;
+		}
+
+		if (ss->state & FIO_SS_IOPS)
+			ss->oldest_y = ss->iops_data[ss->head];
+		else
+			ss->oldest_y = ss->bw_data[ss->head];
+
+		/*
+		 * calculate slope as (sum_xy - sum_x * sum_y / n) / (sum_(x^2)
+		 * - (sum_x)^2 / n) This code assumes that all x values are
+		 * equally spaced when they are often off by a few milliseconds.
+		 * This assumption greatly simplifies the calculations.
+		 */
+		ss->slope = (ss->sum_xy - (double) ss->sum_x * ss->sum_y / intervals) /
+				(ss->sum_x_sq - (double) ss->sum_x * ss->sum_x / intervals);
+		if (ss->state & FIO_SS_PCT)
+			slope_criterion = 100.0 * ss->slope / (ss->sum_y / intervals);
+		else
+			slope_criterion = ss->slope;
+
+
+		result = slope_criterion * (slope_criterion < 0.0 ? -1.0 : 1.0);
+		if (result < ss->limit)
+			slope_ss = true;
+
+		dprint(FD_STEADYSTATE, "sum_y: %llu, sum_xy: %llu, slope: %f, "
+					"criterion: %f, limit: %f, achieved: %d\n",
+					(unsigned long long) ss->sum_y,
+					(unsigned long long) ss->sum_xy,
+					ss->slope, slope_criterion, ss->limit, slope_ss);
+
+
+                //caclulate the mean
+		mean = (double) ss->sum_y / intervals;
+		ss->deviation = 0.0;
+
+		for (i = 0; i < intervals; i++) {
+			if (ss->state & FIO_SS_IOPS)
+				diff = ss->iops_data[i] - mean;
+			else
+				diff = ss->bw_data[i] - mean;
+			ss->deviation = max(ss->deviation, diff * (diff < 0.0 ? -1.0 : 1.0));
+		}
+
+		if (ss->state & FIO_SS_PCT)
+			mean_criterion = 100.0 * ss->deviation / mean;
+		else
+			mean_criterion = ss->deviation;
+
+		if (mean_criterion < ss->limit)
+			dev_ss = true;
+
+		dprint(FD_STEADYSTATE, "intervals: %d, sum_y: %llu, mean: %f, max diff: %f, "
+					"objective: %f, limit: %f, achieved: %d\n",
+					intervals,
+					(unsigned long long) ss->sum_y, mean,
+					ss->deviation, mean_criterion, ss->limit, dev_ss);
+
+
+
+	}
+
+	ss->tail = (ss->tail + 1) % intervals;
+	if (ss->tail <= ss->head)
+		ss->head = (ss->head + 1) % intervals;
+
+	return dev_ss && slope_ss;
+}
+
+
 static bool steadystate_deviation(uint64_t iops, uint64_t bw,
 				  struct thread_data *td)
 {
@@ -286,7 +401,9 @@ int steadystate_check(void)
 
 		if (ss->state & FIO_SS_SLOPE)
 			ret = steadystate_slope(group_iops, group_bw, td);
-		else
+		else if(ss->state & FIO_SS_IOPS_MIX)
+			ret = steadystate_mix(group_iops, group_bw, td);
+                else
 			ret = steadystate_deviation(group_iops, group_bw, td);
 
 		if (ret) {
