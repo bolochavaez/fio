@@ -10,8 +10,10 @@ void steadystate_free(struct thread_data *td)
 {
 	free(td->ss.iops_data);
 	free(td->ss.bw_data);
+	free(td->ss.lat_data);
 	td->ss.iops_data = NULL;
 	td->ss.bw_data = NULL;
+	td->ss.lat_data = NULL;
 }
 
 static void steadystate_alloc(struct thread_data *td)
@@ -20,6 +22,8 @@ static void steadystate_alloc(struct thread_data *td)
 
 	td->ss.bw_data = calloc(intervals, sizeof(uint64_t));
 	td->ss.iops_data = calloc(intervals, sizeof(uint64_t));
+	td->ss.lat_data = calloc(intervals, sizeof(uint64_t));
+
 
 	td->ss.state |= FIO_SS_DATA;
 }
@@ -135,7 +139,7 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw,
 }
 
 
-static bool steadystate_mix(uint64_t iops, uint64_t bw,
+static bool steadystate_mix(uint64_t iops, uint64_t bw, uint64_t latency,
 			      struct thread_data *td)
 {
 	int i, j;
@@ -154,37 +158,69 @@ static bool steadystate_mix(uint64_t iops, uint64_t bw,
 
 	ss->bw_data[ss->tail] = bw;
 	ss->iops_data[ss->tail] = iops;
+	ss->lat_data[ss->tail] = latency;
 
 	if (ss->state & FIO_SS_IOPS)
 		new_val = iops;
+	else if (ss->state & FIO_SS_LAT)
+		new_val = latency;
 	else
 		new_val = bw;
 
 	if (ss->state & FIO_SS_BUFFER_FULL || ss->tail - ss->head == intervals - 1) {
 		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
 			/* first time through */
-			for (i = 0, ss->sum_y = 0; i < intervals; i++) {
-				if (ss->state & FIO_SS_IOPS)
+			for (i = 0, ss->sum_y = 0, ss->d_sum_y = 0; i < intervals; i++) {
+				if (ss->state & FIO_SS_IOPS){
 					ss->sum_y += ss->iops_data[i];
-				else
+					ss->d_sum_y += ss->iops_data[i];
+				}
+				else if (ss->state & FIO_SS_LAT) {
+					ss->sum_y += ss->lat_data[i];
+					ss->d_sum_y += ss->lat_data[i];
+				}
+				else {
 					ss->sum_y += ss->bw_data[i];
+					ss->d_sum_y += ss->bw_data[i];
+				}
 				j = (ss->head + i) % intervals;
-				if (ss->state & FIO_SS_IOPS)
+				if (ss->state & FIO_SS_IOPS){
 					ss->sum_xy += i * ss->iops_data[j];
-				else
+					ss->d_sum_xy += i * ss->iops_data[j];
+				}
+		                else if(ss->state & FIO_SS_LAT) {
+					ss->sum_xy += i * ss->lat_data[j];
+					ss->d_sum_xy += i * ss->lat_data[j];
+				}
+				else {
 					ss->sum_xy += i * ss->bw_data[j];
+					ss->d_sum_xy += i * ss->bw_data[j];
+				}
 			}
 			ss->state |= FIO_SS_BUFFER_FULL;
 		} else {		/* easy to update the sums */
 			ss->sum_y -= ss->oldest_y;
 			ss->sum_y += new_val;
 			ss->sum_xy = ss->sum_xy - ss->sum_y + intervals * new_val;
+
+			ss->d_sum_y -= ss->d_oldest_y;
+			ss->d_sum_y += new_val;
+			ss->d_sum_xy = ss->d_sum_xy - ss->d_sum_y + intervals * new_val;
+
 		}
 
-		if (ss->state & FIO_SS_IOPS)
+		if (ss->state & FIO_SS_IOPS){
 			ss->oldest_y = ss->iops_data[ss->head];
-		else
+			ss->d_oldest_y = ss->iops_data[ss->head];
+		}
+		else if(ss->state & FIO_SS_LAT){
+			ss->oldest_y = ss->lat_data[ss->head];
+			ss->d_oldest_y = ss->lat_data[ss->head];
+		}
+		else {
 			ss->oldest_y = ss->bw_data[ss->head];
+			ss->d_oldest_y = ss->bw_data[ss->head];
+		}
 
 		/*
 		 * calculate slope as (sum_xy - sum_x * sum_y / n) / (sum_(x^2)
@@ -212,12 +248,14 @@ static bool steadystate_mix(uint64_t iops, uint64_t bw,
 
 
                 //caclulate the mean
-		mean = (double) ss->sum_y / intervals;
+		mean = (double) ss->d_sum_y / intervals;
 		ss->deviation = 0.0;
 
 		for (i = 0; i < intervals; i++) {
 			if (ss->state & FIO_SS_IOPS)
 				diff = ss->iops_data[i] - mean;
+		        else if(ss->state & FIO_SS_LAT)
+				diff = ss->lat_data[i] - mean;
 			else
 				diff = ss->bw_data[i] - mean;
 			ss->deviation = max(ss->deviation, diff * (diff < 0.0 ? -1.0 : 1.0));
@@ -234,7 +272,7 @@ static bool steadystate_mix(uint64_t iops, uint64_t bw,
 		dprint(FD_STEADYSTATE, "intervals: %d, sum_y: %llu, mean: %f, max diff: %f, "
 					"objective: %f, limit: %f, achieved: %d\n",
 					intervals,
-					(unsigned long long) ss->sum_y, mean,
+					(unsigned long long) ss->d_sum_y, mean,
 					ss->deviation, mean_criterion, ss->limit, dev_ss);
 
 
@@ -323,8 +361,8 @@ int steadystate_check(void)
 	int  ddir, prev_groupid, group_ramp_time_over = 0;
 	unsigned long rate_time;
 	struct timespec now;
-	uint64_t group_bw = 0, group_iops = 0;
-	uint64_t td_iops, td_bytes;
+	uint64_t group_bw = 0, group_iops = 0, group_lat = 0;
+	uint64_t td_iops, td_bytes, td_lat;
 	bool ret;
 
 	prev_groupid = -1;
@@ -338,11 +376,13 @@ int steadystate_check(void)
 			continue;
 
 		td_iops = 0;
+		td_lat = 0;
 		td_bytes = 0;
 		if (!td->o.group_reporting ||
 		    (td->o.group_reporting && td->groupid != prev_groupid)) {
 			group_bw = 0;
 			group_iops = 0;
+			group_lat = 0;
 			group_ramp_time_over = 0;
 		}
 		prev_groupid = td->groupid;
@@ -363,8 +403,9 @@ int steadystate_check(void)
 		for (ddir = 0; ddir < DDIR_RWDIR_CNT; ddir++) {
 			td_iops += td->io_blocks[ddir];
 			td_bytes += td->io_bytes[ddir];
+       	                td_lat += ((uint64_t)td->ts.lat_stat[ddir].max_val);
 		}
-
+    
 		if (needs_lock)
 			__td_io_u_unlock(td);
 
@@ -376,10 +417,14 @@ int steadystate_check(void)
 				(ss_check_interval * ss_check_interval / 1000L);
 			group_iops += rate_time * (td_iops - ss->prev_iops) /
 				(ss_check_interval * ss_check_interval / 1000L);
+			group_lat += rate_time * (td_lat - ss->prev_latency) /
+				(ss_check_interval * ss_check_interval / 1000L);
+
 			++group_ramp_time_over;
 		}
 		ss->prev_iops = td_iops;
 		ss->prev_bytes = td_bytes;
+		ss->prev_latency = td_lat;
 
 		if (td->o.group_reporting && !(ss->state & FIO_SS_DATA))
 			continue;
@@ -393,16 +438,17 @@ int steadystate_check(void)
 
 		dprint(FD_STEADYSTATE, "steadystate_check() thread: %d, "
 					"groupid: %u, rate_msec: %ld, "
-					"iops: %llu, bw: %llu, head: %d, tail: %d\n",
+					"iops: %llu, bw: %llu, lat: %llu,  head: %d, tail: %d, latency_qd: %llu, latency_ios: %llu \n",
 					__td_index, td->groupid, rate_time,
 					(unsigned long long) group_iops,
 					(unsigned long long) group_bw,
-					ss->head, ss->tail);
+					(unsigned long long) group_lat,
+					ss->head, ss->tail, (unsigned long long)td->latency_qd, (unsigned long long)td->latency_ios);
 
 		if (ss->state & FIO_SS_SLOPE)
 			ret = steadystate_slope(group_iops, group_bw, td);
-		else if(ss->state & FIO_SS_IOPS_MIX)
-			ret = steadystate_mix(group_iops, group_bw, td);
+		else if(ss->state & FIO_SS_LAT_MIX)
+			ret = steadystate_mix(group_iops, group_bw, group_lat, td);
                 else
 			ret = steadystate_deviation(group_iops, group_bw, td);
 

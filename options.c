@@ -1370,7 +1370,7 @@ static int str_steadystate_cb(void *data, const char *str)
 	long long ll;
 
 	if (td->o.ss_state != FIO_SS_IOPS && td->o.ss_state != FIO_SS_IOPS_SLOPE &&
-	    td->o.ss_state != FIO_SS_BW && td->o.ss_state != FIO_SS_BW_SLOPE && td->o.ss_state != FIO_SS_IOPS_MIX) {
+	    td->o.ss_state != FIO_SS_BW && td->o.ss_state != FIO_SS_BW_SLOPE && td->o.ss_state != FIO_SS_LAT_MIX) {
 		/* should be impossible to get here */
 		log_err("fio: unknown steady state criterion\n");
 		return 1;
@@ -5448,8 +5448,8 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 			    .help = "slope calculated from bandwidth measurements",
 			  },
 			  {
-			    .ival = "iops_mix",
-			    .oval = FIO_SS_IOPS_MIX,
+			    .ival = "lat_mix",
+			    .oval = FIO_SS_LAT_MIX,
 			    .help = "slope calculated from both measurements",
 			  },
 

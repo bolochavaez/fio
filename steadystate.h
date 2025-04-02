@@ -24,6 +24,7 @@ struct steadystate_data {
 	unsigned int tail;
 	uint64_t *iops_data;
 	uint64_t *bw_data;
+	uint64_t *lat_data;
 
 	double slope;
 	double deviation;
@@ -35,15 +36,26 @@ struct steadystate_data {
 	uint64_t sum_xy;
 	uint64_t oldest_y;
 
+
+	uint64_t d_sum_y;
+	uint64_t d_sum_x;
+	uint64_t d_sum_x_sq;
+	uint64_t d_sum_xy;
+	uint64_t d_oldest_y;
+
+
 	struct timespec prev_time;
 	uint64_t prev_iops;
 	uint64_t prev_bytes;
+	uint64_t prev_latency;
 };
 
 enum {
 	__FIO_SS_IOPS = 0,
 	__FIO_SS_BW,
+	__FIO_SS_LAT,
 	__FIO_SS_SLOPE,
+	__FIO_SS_DEV,
 	__FIO_SS_ATTAINED,
 	__FIO_SS_RAMP_OVER,
 	__FIO_SS_DATA,
@@ -55,16 +67,18 @@ enum {
 enum {
 	FIO_SS_IOPS		= 1 << __FIO_SS_IOPS,
 	FIO_SS_BW		= 1 << __FIO_SS_BW,
+	FIO_SS_LAT		= 1 << __FIO_SS_LAT,
 	FIO_SS_SLOPE		= 1 << __FIO_SS_SLOPE,
+	FIO_SS_DEV		= 1 << __FIO_SS_DEV,
+	FIO_SS_MIX		= 1 << __FIO_SS_MIX,
 	FIO_SS_ATTAINED		= 1 << __FIO_SS_ATTAINED,
 	FIO_SS_RAMP_OVER	= 1 << __FIO_SS_RAMP_OVER,
 	FIO_SS_DATA		= 1 << __FIO_SS_DATA,
 	FIO_SS_PCT		= 1 << __FIO_SS_PCT,
 	FIO_SS_BUFFER_FULL	= 1 << __FIO_SS_BUFFER_FULL,
-
 	FIO_SS_IOPS_SLOPE	= FIO_SS_IOPS | FIO_SS_SLOPE,
 	FIO_SS_BW_SLOPE		= FIO_SS_BW | FIO_SS_SLOPE,
-	FIO_SS_IOPS_MIX		= 1 << __FIO_SS_MIX,
+	FIO_SS_LAT_MIX		= FIO_SS_LAT | FIO_SS_MIX
 };
 
 #endif
